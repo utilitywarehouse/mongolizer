@@ -1,5 +1,7 @@
 # MongoDB Hot Backup
 
+[![Docker Repository on Quay](https://quay.io/repository/utilitywarehouse/mongolizer/status "Docker Repository on Quay")](https://quay.io/repository/utilitywarehouse/mongolizer)
+
 This tool can back up or restore MongoDB collections while DB is running to/from AWS S3.
 
 ## Installation

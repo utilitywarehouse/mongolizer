@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/boltdb/bolt"
+	"github.com/coreos/bbolt"
 	"github.com/jawher/mow.cli"
 	"github.com/klauspost/compress/snappy"
 	"github.com/prometheus/client_golang/prometheus"
