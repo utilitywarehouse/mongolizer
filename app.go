@@ -13,13 +13,13 @@ import (
 	"time"
 
 	"github.com/coreos/bbolt"
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
 	"github.com/jawher/mow.cli"
 	"github.com/klauspost/compress/snappy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rlmcpherson/s3gof3r"
 	"github.com/utilitywarehouse/go-operational/op"
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
 	cron "gopkg.in/robfig/cron.v2"
 )
 
