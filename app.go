@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/bbolt"
+	"github.com/boltdb/bolt"
+
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
 	"github.com/jawher/mow.cli"
