@@ -80,6 +80,13 @@ func main() {
 		Value:  60,
 	})
 
+	restoreMongoTimeout := app.Int(cli.IntOpt{
+		Name:   "restoreMongoTimeout",
+		Desc:   "Mongo session connection timeout in minutes during restore",
+		EnvVar: "RESTORE_MONGO_TIMEOUT",
+		Value:  10,
+	})
+
 	app.Command("scheduled-backup", "backup a set of mongodb collections", func(cmd *cli.Cmd) {
 		colls := cmd.String(cli.StringOpt{
 			Name:   "collections",
@@ -147,7 +154,7 @@ func main() {
 		})
 		cmd.Action = func() {
 			m := newMongolizer(*connStr, *s3bucket, *s3dir, *s3domain, *accessKey, *secretKey, *mongoTimeout)
-			if err := m.restoreAll(*dateDir, *colls); err != nil {
+			if err := m.restoreAll(*dateDir, *colls, time.Duration(*restoreMongoTimeout)*time.Minute); err != nil {
 				log.Fatalf("restore failed : %v\n", err)
 			}
 		}
@@ -383,14 +390,14 @@ func (m *mongolizer) backup(dir, database, collection string) error {
 	return err
 }
 
-func (m *mongolizer) restoreAll(dateDir string, colls string) error {
+func (m *mongolizer) restoreAll(dateDir string, colls string, timeout time.Duration) error {
 	parsed, err := parseCollections(colls)
 	if err != nil {
 		return err
 	}
 	for _, coll := range parsed {
 		dir := filepath.Join(m.s3dir, dateDir)
-		err := m.restore(dir, coll.database, coll.collection)
+		err := m.restore(dir, coll.database, coll.collection, timeout)
 		if err != nil {
 			return err
 		}
@@ -398,7 +405,7 @@ func (m *mongolizer) restoreAll(dateDir string, colls string) error {
 	return nil
 }
 
-func (m *mongolizer) restore(dir, database, collection string) error {
+func (m *mongolizer) restore(dir, database, collection string, timeout time.Duration) error {
 
 	path := filepath.Join(dir, database, collection+extension)
 
@@ -410,7 +417,7 @@ func (m *mongolizer) restore(dir, database, collection string) error {
 
 	sr := snappy.NewReader(rc)
 
-	if err := restoreCollectionFrom(m.connectionString, database, collection, sr); err != nil {
+	if err := restoreCollectionFrom(m.connectionString, database, collection, sr, timeout); err != nil {
 		return err
 	}
 	return nil
@@ -444,8 +451,8 @@ func dumpCollectionTo(connStr, database, collection string, writer io.Writer, mo
 	return iter.Err()
 }
 
-func restoreCollectionFrom(connStr, database, collection string, reader io.Reader) error {
-	session, err := mgo.DialWithTimeout(connStr, 5*time.Minute)
+func restoreCollectionFrom(connStr, database, collection string, reader io.Reader, timeout time.Duration) error {
+	session, err := mgo.DialWithTimeout(connStr, timeout)
 	if err != nil {
 		return err
 	}
