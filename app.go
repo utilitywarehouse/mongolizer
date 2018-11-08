@@ -426,7 +426,22 @@ func dumpCollectionTo(connStr, database, collection string, writer io.Writer, mo
 	session.SetPrefetch(1.0)
 	defer session.Close()
 
-	q := session.DB(database).C(collection).Find(nil).Snapshot()
+	q := session.DB(database).C(collection).Find(nil)
+
+	// https://docs.mongodb.com/manual/release-notes/3.6-compatibility/#deprecated-options
+	var status bson.M
+	err = session.Run(bson.D{{Name: "serverStatus", Value: 1}}, &status)
+	if err != nil {
+		return err
+	}
+
+	storageEngineConf := status["storageEngine"].(bson.M)
+	switch storageEngineConf["name"] {
+	case "mmapv1":
+		q = q.Hint("_id")
+	default:
+		q = q.Sort("$natural")
+	}
 	iter := q.Iter()
 
 	for {
