@@ -541,7 +541,7 @@ type collName struct {
 func parseCollections(connectionString string, colls string) ([]collName, error) {
 	var cn []collName
 
-	var completeDBs map[string]struct{}
+	completeDBs := map[string]struct{}{}
 	for _, coll := range strings.Split(colls, ",") {
 		c := strings.Split(coll, "/")
 		if len(c) != 2 {
