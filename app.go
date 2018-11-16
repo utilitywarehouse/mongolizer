@@ -184,7 +184,7 @@ func newMongolizer(connectionString, s3bucket, s3dir, s3domain, accessKey, secre
 }
 
 func (m *mongolizer) backupAll(colls string) error {
-	parsed, err := parseCollections(colls)
+	parsed, err := parseCollections(m.connectionString, colls)
 	if err != nil {
 		return err
 	}
@@ -232,7 +232,7 @@ func (m *mongolizer) backupScheduled(colls string, cronExpr string, dbPath strin
 		return nil
 	})
 
-	parsed, err := parseCollections(colls)
+	parsed, err := parseCollections(m.connectionString, colls)
 	if err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func (m *mongolizer) backup(dir, database, collection string) error {
 }
 
 func (m *mongolizer) restoreAll(dateDir string, colls string) error {
-	parsed, err := parseCollections(colls)
+	parsed, err := parseCollections(m.connectionString, colls)
 	if err != nil {
 		return err
 	}
@@ -538,14 +538,41 @@ type collName struct {
 	collection string
 }
 
-func parseCollections(colls string) ([]collName, error) {
+func parseCollections(connectionString string, colls string) ([]collName, error) {
 	var cn []collName
+
+	completeDBs := map[string]struct{}{}
 	for _, coll := range strings.Split(colls, ",") {
 		c := strings.Split(coll, "/")
 		if len(c) != 2 {
-			return nil, fmt.Errorf("failed to parse connections string : %s\n", colls)
+			return nil, fmt.Errorf("failed to parse connections string: %s", colls)
 		}
-		cn = append(cn, collName{c[0], c[1]})
+
+		if _, isParsed := completeDBs[c[0]]; isParsed {
+			continue
+		}
+
+		if c[1] == "*" {
+			session, err := mgo.Dial(connectionString)
+			if err != nil {
+				return cn, err
+			}
+
+			collNames, err := session.DB(c[0]).CollectionNames()
+			if err != nil {
+				return cn, err
+			}
+
+			for _, qc := range collNames {
+				if !strings.Contains(qc, "system") {
+					cn = append(cn, collName{c[0], qc})
+				}
+			}
+			completeDBs[c[0]] = struct{}{}
+			session.Close()
+		} else {
+			cn = append(cn, collName{c[0], c[1]})
+		}
 	}
 
 	return cn, nil
