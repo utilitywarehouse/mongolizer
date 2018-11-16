@@ -564,12 +564,15 @@ func parseCollections(connectionString string, colls string) ([]collName, error)
 			}
 
 			for _, qc := range collNames {
-				cn = append(cn, collName{c[0], qc})
+				if !strings.Contains(qc, "system") {
+					cn = append(cn, collName{c[0], qc})
+				}
 			}
 			completeDBs[c[0]] = struct{}{}
 			session.Close()
+		} else {
+			cn = append(cn, collName{c[0], c[1]})
 		}
-		cn = append(cn, collName{c[0], c[1]})
 	}
 
 	return cn, nil
