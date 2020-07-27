@@ -1,18 +1,13 @@
-FROM alpine:3.7
+FROM golang:alpine AS build
+WORKDIR /go/src/github.com/utilitywarehouse/mongolizer
+COPY . /go/src/github.com/utilitywarehouse/mongolizer
+ENV CGO_ENABLED 0
+ENV GO111MODULE on
+RUN apk --no-cache add git &&\
+ go build -o /mongolizer .
 
-ENV GOPATH=/go
-
-WORKDIR /go/src/app
-ADD . /go/src/app/
-
+FROM alpine:3.12
+COPY --from=build /mongolizer /mongolizer
 EXPOSE 8080
-
-RUN apk --no-cache add git go ca-certificates musl-dev && \
-  go get ./... && \
-  go test -v && \
-  CGO_ENABLED=0 go build -ldflags '-s -extldflags "-static"' -o /mongolizer . && \
-  apk del go git musl-dev && \
-  rm -rf ${GOPATH}
-
 ENTRYPOINT ["/mongolizer"]
 CMD ["scheduled-backup"]
