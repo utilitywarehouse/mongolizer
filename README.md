@@ -100,7 +100,7 @@ spec:
         - name: MONGODB_COLLECTIONS
           value: "db/collection,db/collection2"
         - name: MONGODB
-          value: "mongo:27017"
+          value: "mongodb://mongo:27017"
         - name: AWS_ACCESS_KEY_ID
           value: ""
         - name: AWS_SECRET_ACCESS_KEY
