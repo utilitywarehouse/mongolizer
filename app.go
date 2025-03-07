@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/boltdb/bolt"
 
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
-	"github.com/jawher/mow.cli"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
+	cli "github.com/jawher/mow.cli"
 	"github.com/klauspost/compress/snappy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rlmcpherson/s3gof3r"
@@ -27,7 +30,6 @@ import (
 const extension = ".bson.snappy"
 
 func main() {
-
 	s3gof3r.DefaultConfig.Md5Check = false
 
 	app := cli.App("mongolizer", "Backup and restore mongodb collections to/from s3\nBackups are put in a directory structure /<base-dir>/<date>/database/collection")
@@ -36,7 +38,7 @@ func main() {
 		Name:   "mongodb",
 		Desc:   "mongodb connection string",
 		EnvVar: "MONGODB",
-		Value:  "localhost:27017",
+		Value:  "mongodb://localhost:27017",
 	})
 
 	s3domain := app.String(cli.StringOpt{
@@ -355,7 +357,6 @@ func (m *mongolizer) backupScheduled(colls string, cronExpr string, dbPath strin
 }
 
 func (m *mongolizer) backup(dir, database, collection string) error {
-
 	start := time.Now()
 	log.Printf("backing up %s/%s to %s in %s\n", database, collection, dir, m.s3bucket)
 
@@ -379,7 +380,7 @@ func (m *mongolizer) backup(dir, database, collection string) error {
 	}
 
 	err = w.Close()
-	log.Printf("backed up %s/%s to %s in %s. Duration : %v\n", database, collection, dir, m.s3bucket, time.Now().Sub(start))
+	log.Printf("backed up %s/%s to %s in %s. Duration : %v\n", database, collection, dir, m.s3bucket, time.Since(start))
 	return err
 }
 
@@ -417,41 +418,63 @@ func (m *mongolizer) restore(dir, database, collection string) error {
 }
 
 func dumpCollectionTo(connStr, database, collection string, writer io.Writer, mongoTimeout int) error {
-	session, err := mgo.DialWithTimeout(connStr, time.Duration(mongoTimeout)*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(mongoTimeout)*time.Second)
+	defer cancel()
+	clientOptions := options.Client().ApplyURI(connStr)
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		return err
 	}
-	session.SetSyncTimeout(time.Duration(mongoTimeout) * time.Minute)
-	session.SetSocketTimeout(time.Duration(mongoTimeout) * time.Minute)
-	session.SetPrefetch(1.0)
-	defer session.Close()
+	defer client.Disconnect(ctx)
 
-	q := session.DB(database).C(collection).Find(nil).Snapshot()
-	iter := q.Iter()
+	var status bson.M
+	result := client.Database(database).RunCommand(context.Background(), bson.D{{Key: "serverStatus", Value: 1}})
+	err = result.Decode(&status)
+	if err != nil {
+		return err
+	}
 
-	for {
-		raw := &bson.Raw{}
-		next := iter.Next(raw)
-		if !next {
-			break
-		}
-		_, err := writer.Write(raw.Data)
+	storageEngineConf := status["storageEngine"].(bson.M)
+	opts := &options.FindOptions{}
+	switch storageEngineConf["name"] {
+	case "mmapv1":
+		opts.Hint = "_id"
+	default:
+		opts.Sort = bson.D{{Key: "$natural", Value: 1}}
+	}
+
+	cursor, err := client.Database(database).Collection(collection).Find(context.Background(), bson.D{}, opts)
+	if err != nil {
+		return err
+	}
+
+	ctx = context.Background()
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		raw := cursor.Current
+		_, err := writer.Write(raw)
 		if err != nil {
 			return err
 		}
 	}
+	if err := cursor.Err(); err != nil {
+		return err
+	}
 
-	return iter.Err()
+	return err
 }
 
 func restoreCollectionFrom(connStr, database, collection string, reader io.Reader) error {
-	session, err := mgo.DialWithTimeout(connStr, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(5)*time.Minute)
+	defer cancel()
+	clientOptions := options.Client().ApplyURI(connStr)
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		return err
 	}
-	defer session.Close()
+	defer client.Disconnect(ctx)
 
-	err = clearCollection(session, database, collection)
+	err = clearCollection(client, database, collection)
 	if err != nil {
 		return err
 	}
@@ -459,7 +482,9 @@ func restoreCollectionFrom(connStr, database, collection string, reader io.Reade
 	start := time.Now()
 	log.Printf("starting restore of %s/%s\n", database, collection)
 
-	bulk := session.DB(database).C(collection).Bulk()
+	bulkOption := options.BulkWriteOptions{}
+	bulkOption.SetOrdered(true)
+	var operations []mongo.WriteModel
 
 	var batchBytes int
 	for {
@@ -475,22 +500,22 @@ func restoreCollectionFrom(connStr, database, collection string, reader io.Reade
 		// the limit, write the batch out now. 15000000 is intended to be within the
 		// expected 16MB limit
 		if batchBytes > 0 && batchBytes+len(next) > 15000000 {
-			_, err = bulk.Run()
+			_, err = client.Database(database).Collection(collection).BulkWrite(ctx, operations, &bulkOption)
 			if err != nil {
 				return err
 			}
-			bulk = session.DB(database).C(collection).Bulk()
 			batchBytes = 0
 		}
 
-		bulk.Insert(bson.Raw{Data: next})
+		operations = append(operations, &mongo.InsertOneModel{Document: next})
 
 		batchBytes += len(next)
 	}
-	_, err = bulk.Run()
-	log.Printf("finished restore of %s/%s. Duration: %v\n", database, collection, time.Now().Sub(start))
-	return err
 
+	_, err = client.Database(database).Collection(collection).BulkWrite(ctx, operations, &bulkOption)
+
+	log.Printf("finished restore of %s/%s. Duration: %v\n", database, collection, time.Since(start))
+	return err
 }
 
 func readNextBSON(reader io.Reader) ([]byte, error) {
@@ -524,11 +549,11 @@ func readNextBSON(reader io.Reader) ([]byte, error) {
 	return buf, nil
 }
 
-func clearCollection(session *mgo.Session, database, collection string) error {
+func clearCollection(client *mongo.Client, database, collection string) error {
 	start := time.Now()
 	log.Printf("clearing collection %s/%s\n", database, collection)
-	_, err := session.DB(database).C(collection).RemoveAll(nil)
-	log.Printf("finished clearing collection %s/%s. Duration : %v\n", database, collection, time.Now().Sub(start))
+	_, err := client.Database(database).Collection(collection).DeleteMany(context.Background(), bson.D{})
+	log.Printf("finished clearing collection %s/%s. Duration : %v\n", database, collection, time.Since(start))
 
 	return err
 }
@@ -553,12 +578,16 @@ func parseCollections(connectionString string, colls string) ([]collName, error)
 		}
 
 		if c[1] == "*" {
-			session, err := mgo.Dial(connectionString)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(5)*time.Minute)
+			defer cancel()
+			clientOptions := options.Client().ApplyURI(connectionString)
+			client, err := mongo.Connect(ctx, clientOptions)
 			if err != nil {
 				return cn, err
 			}
+			defer client.Disconnect(ctx)
 
-			collNames, err := session.DB(c[0]).CollectionNames()
+			collNames, err := client.Database(c[0]).ListCollectionNames(ctx, bson.D{})
 			if err != nil {
 				return cn, err
 			}
@@ -569,7 +598,7 @@ func parseCollections(connectionString string, colls string) ([]collName, error)
 				}
 			}
 			completeDBs[c[0]] = struct{}{}
-			session.Close()
+			client.Disconnect(ctx)
 		} else {
 			cn = append(cn, collName{c[0], c[1]})
 		}
